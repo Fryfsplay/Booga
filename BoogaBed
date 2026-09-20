@@ -1,6 +1,8 @@
 --// Bed Loop
 --// English UI
---// Bed Loop + Camera Fix + Respawn GUI Fix
+--// Camera fix only after spawn
+--// Respawn GUI handling
+--// Position + hasSpawned check
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -92,7 +94,7 @@ toggleCorner.CornerRadius = UDim.new(0, 9)
 toggleCorner.Parent = toggle
 
 --==================================================
--- CHARACTER
+-- CHARACTER / ROOT
 --==================================================
 
 local function getRoot()
@@ -106,56 +108,35 @@ local function getRoot()
 end
 
 --==================================================
--- CAMERA FIX
+-- HASSPAWNED
 --==================================================
 
-local function updateCamera()
-	local character = player.Character
+local function getHasSpawned()
 
-	if not character then
-		return
+	-- Attribute
+	local attributeValue = player:GetAttribute("hasSpawned")
+
+	if attributeValue ~= nil then
+		return attributeValue
 	end
 
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local camera = workspace.CurrentCamera
+	-- BoolValue
+	local value = player:FindFirstChild("hasSpawned")
 
-	if humanoid and camera then
-		camera.CameraType = Enum.CameraType.Custom
-		camera.CameraSubject = humanoid
+	if value and value:IsA("BoolValue") then
+		return value.Value
 	end
+
+	return nil
 end
 
--- Initial camera setup
-task.spawn(function()
-	repeat
-		task.wait()
-	until player.Character
-		and player.Character:FindFirstChildOfClass("Humanoid")
+local function hasSpawnedIsFalse()
+	return getHasSpawned() == false
+end
 
-	updateCamera()
-end)
-
--- Camera setup after respawn
-player.CharacterAdded:Connect(function(character)
-
-	character:WaitForChild("Humanoid", 10)
-
-	task.wait(0.2)
-
-	updateCamera()
-end)
-
--- Keep camera fixed
-task.spawn(function()
-
-	while task.wait(0.5) do
-
-		if enabled then
-			updateCamera()
-		end
-
-	end
-end)
+local function hasPlayerSpawned()
+	return getHasSpawned() == true
+end
 
 --==================================================
 -- POSITION CHECK
@@ -172,25 +153,42 @@ local function isNearTarget()
 end
 
 --==================================================
--- HASSPAWNED CHECK
+-- CAMERA FIX
+-- ONLY AFTER hasSpawned == true
 --==================================================
 
-local function hasSpawnedIsFalse()
+local function updateCamera()
 
-	local attributeValue = player:GetAttribute("hasSpawned")
-
-	if attributeValue ~= nil then
-		return attributeValue == false
+	if not hasPlayerSpawned() then
+		return
 	end
 
-	local value = player:FindFirstChild("hasSpawned")
+	local character = player.Character
 
-	if value and value:IsA("BoolValue") then
-		return value.Value == false
+	if not character then
+		return
 	end
 
-	return false
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local camera = workspace.CurrentCamera
+
+	if humanoid and camera then
+		camera.CameraType = Enum.CameraType.Custom
+		camera.CameraSubject = humanoid
+	end
 end
+
+-- Camera loop
+task.spawn(function()
+
+	while task.wait(0.5) do
+
+		if hasPlayerSpawned() then
+			updateCamera()
+		end
+
+	end
+end)
 
 --==================================================
 -- STATUS
@@ -260,6 +258,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if input.KeyCode == Enum.KeyCode.E then
 		setEnabled(not enabled)
 	end
+
 end)
 
 --==================================================
@@ -293,13 +292,15 @@ end)
 
 player.CharacterAdded:Connect(function(character)
 
+	-- Wait for new character
+	local humanoid = character:WaitForChild("Humanoid", 10)
 	local root = character:WaitForChild("HumanoidRootPart", 10)
 
-	if not root then
+	if not humanoid or not root then
 		return
 	end
 
-	-- Wait for the game's interfaces to reload
+	-- Give the game time to load its GUIs
 	task.wait(0.5)
 
 	local playerGui = game:GetService("Players").LocalPlayer.PlayerGui
@@ -332,7 +333,9 @@ player.CharacterAdded:Connect(function(character)
 
 	task.wait(0.2)
 
-	updateCamera()
+	if hasPlayerSpawned() then
+		updateCamera()
+	end
 
 	--==================================================
 	-- STATUS
@@ -341,6 +344,7 @@ player.CharacterAdded:Connect(function(character)
 	if enabled then
 		updateStatus()
 	end
+
 end)
 
 --==================================================
