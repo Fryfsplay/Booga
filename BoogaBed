@@ -1,0 +1,297 @@
+--// Bed Loop
+--// English UI
+--// Keeps the loop state after death
+--// Checks position + hasSpawned
+--// Updates PlayerGui after respawn
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+--==================================================
+-- CONFIG
+--==================================================
+
+local enabled = false
+
+local TARGET_POSITION = Vector3.new(
+	-1686.31201171875,
+	-3,
+	-2534.194091796875
+)
+
+local POSITION_TOLERANCE = 10
+local LOOP_INTERVAL = 1
+
+--==================================================
+-- GUI
+--==================================================
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "BedLoopGUI"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.fromOffset(260, 150)
+main.Position = UDim2.new(0.5, -130, 0.5, -75)
+main.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = main
+
+--==================================================
+-- TITLE
+--==================================================
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 40)
+title.BackgroundTransparency = 1
+title.Text = "Bed Loop"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextSize = 18
+title.Font = Enum.Font.GothamBold
+title.Parent = main
+
+--==================================================
+-- STATUS
+--==================================================
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -20, 0, 25)
+status.Position = UDim2.fromOffset(10, 38)
+status.BackgroundTransparency = 1
+status.Text = "Disabled"
+status.TextColor3 = Color3.fromRGB(170, 170, 180)
+status.TextSize = 11
+status.Font = Enum.Font.Gotham
+status.Parent = main
+
+--==================================================
+-- TOGGLE BUTTON
+--==================================================
+
+local toggle = Instance.new("TextButton")
+toggle.Size = UDim2.new(1, -30, 0, 50)
+toggle.Position = UDim2.fromOffset(15, 75)
+toggle.BackgroundColor3 = Color3.fromRGB(120, 45, 45)
+toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggle.TextSize = 14
+toggle.Font = Enum.Font.GothamMedium
+toggle.Text = "Bed Loop: OFF"
+toggle.Parent = main
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 9)
+toggleCorner.Parent = toggle
+
+--==================================================
+-- CHARACTER / ROOT
+--==================================================
+
+local function getRoot()
+	local character = player.Character
+
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChild("HumanoidRootPart")
+end
+
+--==================================================
+-- POSITION CHECK
+--==================================================
+
+local function isNearTarget()
+	local root = getRoot()
+
+	if not root then
+		return false
+	end
+
+	return (root.Position - TARGET_POSITION).Magnitude <= POSITION_TOLERANCE
+end
+
+--==================================================
+-- HASSPAWNED CHECK
+--==================================================
+
+local function hasSpawnedIsFalse()
+
+	-- Check Attribute
+	local attributeValue = player:GetAttribute("hasSpawned")
+
+	if attributeValue ~= nil then
+		return attributeValue == false
+	end
+
+	-- Check BoolValue
+	local value = player:FindFirstChild("hasSpawned")
+
+	if value and value:IsA("BoolValue") then
+		return value.Value == false
+	end
+
+	return false
+end
+
+--==================================================
+-- STATUS
+--==================================================
+
+local function updateStatus()
+
+	if not enabled then
+		status.Text = "Disabled"
+		status.TextColor3 = Color3.fromRGB(170, 170, 180)
+		return
+	end
+
+	if not isNearTarget() then
+		status.Text = "Out of position"
+		status.TextColor3 = Color3.fromRGB(255, 180, 80)
+		return
+	end
+
+	if not hasSpawnedIsFalse() then
+		status.Text = "hasSpawned is not false"
+		status.TextColor3 = Color3.fromRGB(255, 180, 80)
+		return
+	end
+
+	status.Text = "Conditions OK"
+	status.TextColor3 = Color3.fromRGB(100, 255, 130)
+end
+
+--==================================================
+-- ENABLE / DISABLE
+--==================================================
+
+local function setEnabled(state)
+
+	enabled = state
+
+	if enabled then
+		toggle.Text = "Bed Loop: ON"
+		toggle.BackgroundColor3 = Color3.fromRGB(45, 120, 70)
+	else
+		toggle.Text = "Bed Loop: OFF"
+		toggle.BackgroundColor3 = Color3.fromRGB(120, 45, 45)
+	end
+
+	updateStatus()
+end
+
+--==================================================
+-- BUTTON
+--==================================================
+
+toggle.MouseButton1Click:Connect(function()
+	setEnabled(not enabled)
+end)
+
+--==================================================
+-- E KEY
+--==================================================
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+
+	if gameProcessed then
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.E then
+		setEnabled(not enabled)
+	end
+end)
+
+--==================================================
+-- BED LOOP
+--==================================================
+
+task.spawn(function()
+
+	while true do
+
+		task.wait(LOOP_INTERVAL)
+
+		if enabled then
+
+			updateStatus()
+
+			if isNearTarget() and hasSpawnedIsFalse() then
+
+				pcall(function()
+					ReplicatedStorage.Events.SpawnFirst:InvokeServer(true)
+				end)
+
+			end
+		end
+	end
+end)
+
+--==================================================
+-- RESPAWN
+--==================================================
+
+player.CharacterAdded:Connect(function(character)
+
+	-- Wait for the new character
+	local root = character:WaitForChild("HumanoidRootPart", 10)
+
+	if not root then
+		return
+	end
+
+	-- Give the game time to recreate its interfaces
+	task.wait(0.5)
+
+	local playerGui = game:GetService("Players").LocalPlayer.PlayerGui
+
+	--==================================================
+	-- PLAYER GUI STATES
+	--==================================================
+
+	local mainGui = playerGui:WaitForChild("MainGui", 10)
+
+	if mainGui then
+		mainGui.Enabled = true
+	end
+
+	local topbar = playerGui:WaitForChild("Topbar", 10)
+
+	if topbar then
+		topbar.Enabled = true
+	end
+
+	local spawnGui = playerGui:WaitForChild("SpawnGui", 10)
+
+	if spawnGui then
+		spawnGui.Enabled = false
+	end
+
+	--==================================================
+	-- UPDATE STATUS
+	--==================================================
+
+	task.wait(0.2)
+
+	if enabled then
+		updateStatus()
+	end
+end)
+
+--==================================================
+-- INITIALIZATION
+--==================================================
+
+setEnabled(false)
