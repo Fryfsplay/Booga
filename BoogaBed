@@ -1,8 +1,6 @@
 --// Bed Loop
 --// English UI
---// Keeps the loop state after death
---// Checks position + hasSpawned
---// Updates PlayerGui after respawn
+--// Bed Loop + Camera Fix + Respawn GUI Fix
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -76,7 +74,7 @@ status.Font = Enum.Font.Gotham
 status.Parent = main
 
 --==================================================
--- TOGGLE BUTTON
+-- TOGGLE
 --==================================================
 
 local toggle = Instance.new("TextButton")
@@ -94,7 +92,7 @@ toggleCorner.CornerRadius = UDim.new(0, 9)
 toggleCorner.Parent = toggle
 
 --==================================================
--- CHARACTER / ROOT
+-- CHARACTER
 --==================================================
 
 local function getRoot()
@@ -106,6 +104,58 @@ local function getRoot()
 
 	return character:FindFirstChild("HumanoidRootPart")
 end
+
+--==================================================
+-- CAMERA FIX
+--==================================================
+
+local function updateCamera()
+	local character = player.Character
+
+	if not character then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local camera = workspace.CurrentCamera
+
+	if humanoid and camera then
+		camera.CameraType = Enum.CameraType.Custom
+		camera.CameraSubject = humanoid
+	end
+end
+
+-- Initial camera setup
+task.spawn(function()
+	repeat
+		task.wait()
+	until player.Character
+		and player.Character:FindFirstChildOfClass("Humanoid")
+
+	updateCamera()
+end)
+
+-- Camera setup after respawn
+player.CharacterAdded:Connect(function(character)
+
+	character:WaitForChild("Humanoid", 10)
+
+	task.wait(0.2)
+
+	updateCamera()
+end)
+
+-- Keep camera fixed
+task.spawn(function()
+
+	while task.wait(0.5) do
+
+		if enabled then
+			updateCamera()
+		end
+
+	end
+end)
 
 --==================================================
 -- POSITION CHECK
@@ -127,14 +177,12 @@ end
 
 local function hasSpawnedIsFalse()
 
-	-- Check Attribute
 	local attributeValue = player:GetAttribute("hasSpawned")
 
 	if attributeValue ~= nil then
 		return attributeValue == false
 	end
 
-	-- Check BoolValue
 	local value = player:FindFirstChild("hasSpawned")
 
 	if value and value:IsA("BoolValue") then
@@ -245,20 +293,19 @@ end)
 
 player.CharacterAdded:Connect(function(character)
 
-	-- Wait for the new character
 	local root = character:WaitForChild("HumanoidRootPart", 10)
 
 	if not root then
 		return
 	end
 
-	-- Give the game time to recreate its interfaces
+	-- Wait for the game's interfaces to reload
 	task.wait(0.5)
 
 	local playerGui = game:GetService("Players").LocalPlayer.PlayerGui
 
 	--==================================================
-	-- PLAYER GUI STATES
+	-- GUI STATES
 	--==================================================
 
 	local mainGui = playerGui:WaitForChild("MainGui", 10)
@@ -280,10 +327,16 @@ player.CharacterAdded:Connect(function(character)
 	end
 
 	--==================================================
-	-- UPDATE STATUS
+	-- CAMERA
 	--==================================================
 
 	task.wait(0.2)
+
+	updateCamera()
+
+	--==================================================
+	-- STATUS
+	--==================================================
 
 	if enabled then
 		updateStatus()
