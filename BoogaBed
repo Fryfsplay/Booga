@@ -1,8 +1,7 @@
 --// Bed Loop
 --// English UI
---// Camera fix only after spawn
---// Respawn GUI handling
---// Position + hasSpawned check
+--// Checks spawn state + position every 0.2 seconds
+--// Camera + GUI are updated continuously
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,7 +22,8 @@ local TARGET_POSITION = Vector3.new(
 )
 
 local POSITION_TOLERANCE = 10
-local LOOP_INTERVAL = 1
+local CHECK_INTERVAL = 0.2
+local BED_INTERVAL = 1
 
 --==================================================
 -- GUI
@@ -94,7 +94,7 @@ toggleCorner.CornerRadius = UDim.new(0, 9)
 toggleCorner.Parent = toggle
 
 --==================================================
--- CHARACTER / ROOT
+-- CHARACTER
 --==================================================
 
 local function getRoot()
@@ -130,16 +130,16 @@ local function getHasSpawned()
 	return nil
 end
 
-local function hasSpawnedIsFalse()
-	return getHasSpawned() == false
-end
-
 local function hasPlayerSpawned()
 	return getHasSpawned() == true
 end
 
+local function hasSpawnedIsFalse()
+	return getHasSpawned() == false
+end
+
 --==================================================
--- POSITION CHECK
+-- POSITION
 --==================================================
 
 local function isNearTarget()
@@ -153,8 +153,7 @@ local function isNearTarget()
 end
 
 --==================================================
--- CAMERA FIX
--- ONLY AFTER hasSpawned == true
+-- CAMERA
 --==================================================
 
 local function updateCamera()
@@ -178,17 +177,50 @@ local function updateCamera()
 	end
 end
 
--- Camera loop
-task.spawn(function()
+--==================================================
+-- PLAYER GUI
+--==================================================
 
-	while task.wait(0.5) do
+local function updatePlayerGui()
 
-		if hasPlayerSpawned() then
-			updateCamera()
-		end
-
+	if not hasPlayerSpawned() then
+		return
 	end
-end)
+
+	if not isNearTarget() then
+		return
+	end
+
+	local playerGui = player:FindFirstChild("PlayerGui")
+
+	if not playerGui then
+		return
+	end
+
+	-- MainGui ON
+	local mainGui = playerGui:FindFirstChild("MainGui")
+
+	if mainGui then
+		mainGui.Enabled = true
+	end
+
+	-- Topbar ON
+	local topbar = playerGui:FindFirstChild("Topbar")
+
+	if topbar then
+		topbar.Enabled = true
+	end
+
+	-- SpawnGui OFF
+	local spawnGui = playerGui:FindFirstChild("SpawnGui")
+
+	if spawnGui then
+		spawnGui.Enabled = false
+	end
+
+	-- Camera
+	updateCamera()
+end
 
 --==================================================
 -- STATUS
@@ -199,6 +231,12 @@ local function updateStatus()
 	if not enabled then
 		status.Text = "Disabled"
 		status.TextColor3 = Color3.fromRGB(170, 170, 180)
+		return
+	end
+
+	if not hasPlayerSpawned() then
+		status.Text = "Not spawned"
+		status.TextColor3 = Color3.fromRGB(255, 180, 80)
 		return
 	end
 
@@ -219,7 +257,7 @@ local function updateStatus()
 end
 
 --==================================================
--- ENABLE / DISABLE
+-- TOGGLE
 --==================================================
 
 local function setEnabled(state)
@@ -236,10 +274,6 @@ local function setEnabled(state)
 
 	updateStatus()
 end
-
---==================================================
--- BUTTON
---==================================================
 
 toggle.MouseButton1Click:Connect(function()
 	setEnabled(not enabled)
@@ -258,7 +292,30 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if input.KeyCode == Enum.KeyCode.E then
 		setEnabled(not enabled)
 	end
+end)
 
+--==================================================
+-- CONTINUOUS SPAWN / GUI / CAMERA CHECK
+--==================================================
+
+task.spawn(function()
+
+	while true do
+
+		task.wait(CHECK_INTERVAL)
+
+		local spawned = hasPlayerSpawned()
+		local nearSpawn = isNearTarget()
+
+		-- Only do GUI + camera when both conditions are true
+		if spawned and nearSpawn then
+			updatePlayerGui()
+		end
+
+		if enabled then
+			updateStatus()
+		end
+	end
 end)
 
 --==================================================
@@ -269,11 +326,9 @@ task.spawn(function()
 
 	while true do
 
-		task.wait(LOOP_INTERVAL)
+		task.wait(BED_INTERVAL)
 
 		if enabled then
-
-			updateStatus()
 
 			if isNearTarget() and hasSpawnedIsFalse() then
 
@@ -292,59 +347,12 @@ end)
 
 player.CharacterAdded:Connect(function(character)
 
-	-- Wait for new character
-	local humanoid = character:WaitForChild("Humanoid", 10)
-	local root = character:WaitForChild("HumanoidRootPart", 10)
+	-- Wait for the new character
+	character:WaitForChild("Humanoid", 10)
+	character:WaitForChild("HumanoidRootPart", 10)
 
-	if not humanoid or not root then
-		return
-	end
-
-	-- Give the game time to load its GUIs
-	task.wait(0.5)
-
-	local playerGui = game:GetService("Players").LocalPlayer.PlayerGui
-
-	--==================================================
-	-- GUI STATES
-	--==================================================
-
-	local mainGui = playerGui:WaitForChild("MainGui", 10)
-
-	if mainGui then
-		mainGui.Enabled = true
-	end
-
-	local topbar = playerGui:WaitForChild("Topbar", 10)
-
-	if topbar then
-		topbar.Enabled = true
-	end
-
-	local spawnGui = playerGui:WaitForChild("SpawnGui", 10)
-
-	if spawnGui then
-		spawnGui.Enabled = false
-	end
-
-	--==================================================
-	-- CAMERA
-	--==================================================
-
-	task.wait(0.2)
-
-	if hasPlayerSpawned() then
-		updateCamera()
-	end
-
-	--==================================================
-	-- STATUS
-	--==================================================
-
-	if enabled then
-		updateStatus()
-	end
-
+	-- The continuous 0.2s loop handles the rest
+	-- after the player reaches the spawn position.
 end)
 
 --==================================================
