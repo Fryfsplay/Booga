@@ -1,4 +1,4 @@
---// Bullets UI + TP/Bed Loop + Camera Fix
+--// Bullets UI + TP/Bed Loop + Camera Fix + Water Walk Fix
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -6,21 +6,17 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
---==================================================
--- CONFIG
---==================================================
-
 local TARGET_POSITION = Vector3.new(
-	-1686.31201171875,
-	-3,
-	-2534.194091796875
+    -1686.31201171875,
+    -3,
+    -2534.194091796875
 )
 
 local POSITION_TOLERANCE = 10
 
---==================================================
--- UI
---==================================================
+--//==================================================
+--// GUI
+--//==================================================
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "BulletsBypass"
@@ -62,205 +58,244 @@ local toggleCorner = Instance.new("UICorner")
 toggleCorner.CornerRadius = UDim.new(0, 9)
 toggleCorner.Parent = toggle
 
---==================================================
--- ENABLE / DISABLE
---==================================================
-
+--// Bed Loop OFF au démarrage
 local enabled = false
 
 local function updateButton()
-	toggle.Text = "TP / Bed Loop: " .. (enabled and "ON" or "OFF")
+    toggle.Text = "TP / Bed Loop: " .. (enabled and "ON" or "OFF")
 end
 
 updateButton()
 
 toggle.MouseButton1Click:Connect(function()
-	enabled = not enabled
-	updateButton()
+    enabled = not enabled
+    updateButton()
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then
-		return
-	end
+    if gameProcessed then
+        return
+    end
 
-	if input.KeyCode == Enum.KeyCode.E then
-		enabled = not enabled
-		updateButton()
-	end
+    if input.KeyCode == Enum.KeyCode.E then
+        enabled = not enabled
+        updateButton()
+    end
 end)
 
---==================================================
--- HASSPAWNED
---==================================================
+--//==================================================
+--// HAS SPAWNED
+--//==================================================
 
 local function getHasSpawned()
+    local attributeValue = player:GetAttribute("hasSpawned")
 
-	local attributeValue = player:GetAttribute("hasSpawned")
+    if attributeValue ~= nil then
+        return attributeValue
+    end
 
-	if attributeValue ~= nil then
-		return attributeValue
-	end
+    local value = player:FindFirstChild("hasSpawned")
 
-	local value = player:FindFirstChild("hasSpawned")
+    if value and value:IsA("BoolValue") then
+        return value.Value
+    end
 
-	if value and value:IsA("BoolValue") then
-		return value.Value
-	end
-
-	return nil
+    return nil
 end
 
---==================================================
--- POSITION
---==================================================
+--//==================================================
+--// CHARACTER / HUMANOID
+--//==================================================
+
+local function getCharacter()
+    -- Cherche le personnage dans Workspace.Players
+    local playersFolder = workspace:FindFirstChild("Players")
+
+    if playersFolder then
+        local character = playersFolder:FindFirstChild(player.Name)
+
+        if character then
+            return character
+        end
+    end
+
+    -- Fallback sur le Character Roblox normal
+    return player.Character
+end
+
+local function getHumanoid()
+    local character = getCharacter()
+
+    if not character then
+        return nil
+    end
+
+    return character:FindFirstChildOfClass("Humanoid")
+        or character:FindFirstChild("Humanoid")
+end
+
+--//==================================================
+--// WATER WALK FIX
+--//==================================================
+
+local function disableSwimming()
+    local humanoid = getHumanoid()
+
+    if not humanoid then
+        return
+    end
+
+    -- Empêche l'état Swimming
+    humanoid:SetStateEnabled(
+        Enum.HumanoidStateType.Swimming,
+        false
+    )
+
+    -- Si le personnage est déjà en train de nager,
+    -- on le remet immédiatement en état normal.
+    if humanoid:GetState() == Enum.HumanoidStateType.Swimming then
+        humanoid:ChangeState(Enum.HumanoidStateType.Running)
+    end
+end
+
+--// Vérification régulière du Humanoid
+task.spawn(function()
+    while task.wait(0.1) do
+        disableSwimming()
+    end
+end)
+
+--//==================================================
+--// POSITION CIBLE
+--//==================================================
 
 local function isNearTarget()
+    local character = getCharacter()
 
-	local character = player.Character
+    if not character then
+        return false
+    end
 
-	if not character then
-		return false
-	end
+    local root = character:FindFirstChild("HumanoidRootPart")
 
-	local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then
+        return false
+    end
 
-	if not root then
-		return false
-	end
-
-	return (root.Position - TARGET_POSITION).Magnitude <= POSITION_TOLERANCE
+    return (root.Position - TARGET_POSITION).Magnitude <= POSITION_TOLERANCE
 end
 
---==================================================
--- CAMERA
---==================================================
+--//==================================================
+--// CAMERA
+--//==================================================
 
 local function updateCamera()
+    local humanoid = getHumanoid()
+    local camera = workspace.CurrentCamera
 
-	local character = player.Character
-
-	if not character then
-		return
-	end
-
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local camera = workspace.CurrentCamera
-
-	if humanoid and camera then
-		camera.CameraType = Enum.CameraType.Custom
-		camera.CameraSubject = humanoid
-	end
+    if humanoid and camera then
+        camera.CameraType = Enum.CameraType.Custom
+        camera.CameraSubject = humanoid
+    end
 end
 
---==================================================
--- GUI + CAMERA
--- CHECK EVERY 0.2 SECONDS
---
--- IMPORTANT:
--- SI JE NE SUIS PAS AU -1686...
--- => GUI ON + CAMERA
---==================================================
+--//==================================================
+--// GUI + CAMERA SELON POSITION
+--//==================================================
 
 task.spawn(function()
+    while task.wait(0.2) do
 
-	while task.wait(0.2) do
+        local character = getCharacter()
+        local root = character and character:FindFirstChild("HumanoidRootPart")
 
-		local character = player.Character
-		local root = character and character:FindFirstChild("HumanoidRootPart")
+        if root then
 
-		if root then
+            local distance = (root.Position - TARGET_POSITION).Magnitude
+            local NOT_AT_SPAWN = distance > POSITION_TOLERANCE
 
-			local distance =
-				(root.Position - TARGET_POSITION).Magnitude
+            local playerGui = player:FindFirstChild("PlayerGui")
 
-			local NOT_AT_SPAWN = distance > POSITION_TOLERANCE
+            if playerGui then
 
-			local playerGui = player:FindFirstChild("PlayerGui")
+                local mainGui = playerGui:FindFirstChild("MainGui")
+                local topbar = playerGui:FindFirstChild("Topbar")
+                local spawnGui = playerGui:FindFirstChild("SpawnGui")
 
-			if playerGui then
+                if NOT_AT_SPAWN then
 
-				local mainGui = playerGui:FindFirstChild("MainGui")
-				local topbar = playerGui:FindFirstChild("Topbar")
-				local spawnGui = playerGui:FindFirstChild("SpawnGui")
+                    -- Pas au spawn
+                    if mainGui then
+                        mainGui.Enabled = true
+                    end
 
-				if NOT_AT_SPAWN then
+                    if topbar then
+                        topbar.Enabled = true
+                    end
 
-					--========================================
-					-- PAS AU -1686...
-					-- GUI + CAMERA ON
-					--========================================
+                    if spawnGui then
+                        spawnGui.Enabled = false
+                    end
 
-					if mainGui then
-						mainGui.Enabled = true
-					end
+                    updateCamera()
 
-					if topbar then
-						topbar.Enabled = true
-					end
+                else
 
-					if spawnGui then
-						spawnGui.Enabled = false
-					end
+                    -- Au spawn
+                    if mainGui then
+                        mainGui.Enabled = false
+                    end
 
-					updateCamera()
+                    if topbar then
+                        topbar.Enabled = false
+                    end
 
-				else
+                    if spawnGui then
+                        spawnGui.Enabled = true
+                    end
 
-					--========================================
-					-- AU -1686...
-					-- GUI OFF
-					--========================================
-
-					if mainGui then
-						mainGui.Enabled = false
-					end
-
-					if topbar then
-						topbar.Enabled = false
-					end
-
-					if spawnGui then
-						spawnGui.Enabled = true
-					end
-
-				end
-			end
-		end
-	end
+                end
+            end
+        end
+    end
 end)
 
---==================================================
--- BED LOOP
---==================================================
+--//==================================================
+--// BED LOOP
+--//==================================================
 
 task.spawn(function()
+    while task.wait(1) do
 
-	while task.wait(1) do
+        if enabled then
 
-		if enabled then
+            local nearSpawn = isNearTarget()
+            local hasSpawned = getHasSpawned()
 
-			local nearSpawn = isNearTarget()
-			local hasSpawned = getHasSpawned()
+            if nearSpawn and hasSpawned == false then
 
-			if nearSpawn and hasSpawned == false then
+                pcall(function()
+                    ReplicatedStorage.Events.SpawnFirst:InvokeServer(true)
+                end)
 
-				pcall(function()
-					ReplicatedStorage.Events.SpawnFirst:InvokeServer(true)
-				end)
-
-			end
-		end
-	end
+            end
+        end
+    end
 end)
 
---==================================================
--- CHARACTER ADDED
---==================================================
+--//==================================================
+--// RESPAWN
+--//==================================================
 
 player.CharacterAdded:Connect(function(character)
 
-	character:WaitForChild("Humanoid")
-	character:WaitForChild("HumanoidRootPart")
+    character:WaitForChild("Humanoid")
+    character:WaitForChild("HumanoidRootPart")
+
+    task.wait(0.2)
+
+    -- Réapplique la correction après respawn
+    disableSwimming()
+    updateCamera()
 
 end)
