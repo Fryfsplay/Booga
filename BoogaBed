@@ -3,18 +3,13 @@ local R=game:GetService("ReplicatedStorage")
 local U=game:GetService("UserInputService")
 local p=P.LocalPlayer
 local T=Vector3.new(-1686.312,-3,-2534.194)
+local PF=workspace:WaitForChild("Players")
 
-local g=Instance.new("ScreenGui",p:WaitForChild("PlayerGui"))
-g.Name="BulletsBypass";g.ResetOnSpawn=false
-local f=Instance.new("Frame",g)
-f.Size=UDim2.fromOffset(250,130);f.Position=UDim2.new(.5,-125,.5,-65);f.BackgroundColor3=Color3.fromRGB(20,20,25);f.BorderSizePixel=0;f.Active=true;f.Draggable=true
+local g=Instance.new("ScreenGui",p:WaitForChild("PlayerGui"));g.Name="BulletsBypass";g.ResetOnSpawn=false
+local f=Instance.new("Frame",g);f.Size=UDim2.fromOffset(250,130);f.Position=UDim2.new(.5,-125,.5,-65);f.BackgroundColor3=Color3.fromRGB(20,20,25);f.BorderSizePixel=0;f.Active=true;f.Draggable=true
 Instance.new("UICorner",f).CornerRadius=UDim.new(0,12)
-
-local t=Instance.new("TextLabel",f)
-t.Size=UDim2.new(1,0,0,45);t.BackgroundTransparency=1;t.Text="Bullets Bypass";t.TextColor3=Color3.new(1,1,1);t.TextSize=18;t.Font=Enum.Font.GothamBold
-
-local b=Instance.new("TextButton",f)
-b.Size=UDim2.new(1,-30,0,50);b.Position=UDim2.fromOffset(15,60);b.BackgroundColor3=Color3.fromRGB(55,55,65);b.TextColor3=Color3.new(1,1,1);b.TextSize=14;b.Font=Enum.Font.GothamMedium;b.Text="TP / Bed Loop: OFF"
+local t=Instance.new("TextLabel",f);t.Size=UDim2.new(1,0,0,45);t.BackgroundTransparency=1;t.Text="Bullets Bypass";t.TextColor3=Color3.new(1,1,1);t.TextSize=18;t.Font=Enum.Font.GothamBold
+local b=Instance.new("TextButton",f);b.Size=UDim2.new(1,-30,0,50);b.Position=UDim2.fromOffset(15,60);b.BackgroundColor3=Color3.fromRGB(55,55,65);b.TextColor3=Color3.new(1,1,1);b.TextSize=14;b.Font=Enum.Font.GothamMedium;b.Text="TP / Bed Loop: OFF"
 Instance.new("UICorner",b).CornerRadius=UDim.new(0,9)
 
 local e=false
@@ -22,33 +17,39 @@ local function tg()e=not e;b.Text="TP / Bed Loop: "..(e and"ON"or"OFF")end
 b.MouseButton1Click:Connect(tg)
 U.InputBegan:Connect(function(i,x)if not x and i.KeyCode==Enum.KeyCode.E then tg()end end)
 
-local function c()local x=workspace:FindFirstChild("Players");return x and x:FindFirstChild(p.Name)or p.Character end
+local function c()return PF:FindFirstChild(p.Name)or p.Character end
 local function h()local x=c();return x and x:FindFirstChild("Humanoid")end
 local function n()local x=c();x=x and x:FindFirstChild("HumanoidRootPart");return x and(x.Position-T).Magnitude<=10 end
 local function s()local x=p:GetAttribute("hasSpawned");if x~=nil then return x end;x=p:FindFirstChild("hasSpawned");return x and x:IsA("BoolValue")and x.Value end
 local function w()local x=h();if x then x:SetStateEnabled(Enum.HumanoidStateType.Swimming,false);if x:GetState()==Enum.HumanoidStateType.Swimming then x:ChangeState(Enum.HumanoidStateType.Running)end end end
 local function cam()local x=h();local z=workspace.CurrentCamera;if x and z then z.CameraType=Enum.CameraType.Custom;z.CameraSubject=x end end
 
-task.spawn(function()while task.wait(.1)do w()end end)
-
-task.spawn(function()while task.wait(.2)do
-local q=p:FindFirstChild("PlayerGui")
-if q then
-local m=q:FindFirstChild("MainGui")
-local z=q:FindFirstChild("Topbar")
-local s=q:FindFirstChild("SpawnGui")
-local x=not n()
-if m then m.Enabled=x end
-if z then z.Enabled=x end
-if s then s.Enabled=not x end
-if x then cam()end
+local function visible(x)
+	if not x:IsA("Model")then return end
+	for _,o in ipairs(x:GetDescendants())do
+		if o:IsA("BasePart")then o.LocalTransparencyModifier=0
+		elseif o:IsA("Decal")then o.Transparency=0 end
+	end
 end
+
+for _,x in ipairs(PF:GetChildren())do visible(x)end
+PF.ChildAdded:Connect(visible)
+
+task.spawn(function()while task.wait(.05)do
+	for _,x in ipairs(PF:GetChildren())do visible(x)end
+end end)
+
+task.spawn(function()while task.wait(.1)do w()end end)
+task.spawn(function()while task.wait(.2)do
+	local q=p:FindFirstChild("PlayerGui")
+	if q then
+		local m=q:FindFirstChild("MainGui");local z=q:FindFirstChild("Topbar");local sg=q:FindFirstChild("SpawnGui");local x=not n()
+		if m then m.Enabled=x end;if z then z.Enabled=x end;if sg then sg.Enabled=not x end;if x then cam()end
+	end
 end end)
 
 task.spawn(function()while task.wait(1)do
-if e and n()and s()==false then
-pcall(function()R.Events.SpawnFirst:InvokeServer(true)end)
-end
+	if e and n()and s()==false then pcall(function()R.Events.SpawnFirst:InvokeServer(true)end)end
 end end)
 
-p.CharacterAdded:Connect(function(x)x:WaitForChild("Humanoid");x:WaitForChild("HumanoidRootPart");task.wait(.2);w();cam()end)
+p.CharacterAdded:Connect(function(x)x:WaitForChild("Humanoid");x:WaitForChild("HumanoidRootPart");task.wait(.2);w();cam();visible(x)end)
