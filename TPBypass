@@ -1,8 +1,8 @@
 -- ============================================================
 -- ⚙️ CONFIGURATION — MODIFIE ICI
 -- ============================================================
-local WEBHOOK_URL     = "https://discord.com/api/webhooks/1562599957410881548/NHTAbghN_ufuZmz3xaQOJlhSMFlqNUgcSsrcoasV622RLJMeegFkjvXYPvGcNpZ03FlX"   -- ← colle ton URL Discord
-local CHECK_USER_ID   = 7251518719                     -- ← nil = toi, sinon mets ton ID
+local WEBHOOK_URL     = "https://discord.com/api/webhooks/1562599957410881548/NHTAbghN_ufuZmz3xaQOJlhSMFlqNUgcSsrcoasV622RLJMeegFkjvXYPvGcNpZ03FlX"
+local CHECK_USER_ID   = 7251518719
 
 local CHECK_PRESENCE  = true
 local PRESENCE_POLL   = 5
@@ -1163,28 +1163,64 @@ task.spawn(function()
 
     waitUntilInGame()
 
+    -- ============================================================
+    -- 🔍 SCAN AVEC LECTURE ROBUSTE DE .Quantity (enfant direct)
+    -- ============================================================
     local List = P.PlayerGui.CrateUI.Crates.CrateMenu.Container.Inventory.List
     local Event = RS:WaitForChild("ByteNetReliable")
     local cands, lines = {}, {}
     local animCount = 0
-    for _,v in ipairs(List:GetDescendants()) do
-        if v:IsA("TextButton") or v:IsA("ImageButton") then
-            local q = v:FindFirstChild("Quantity", true)
-            local n = q and q:IsA("TextLabel") and parseQty(q.Text)
-            local id = findId(v.Name)
-            if n and n >= 1 then
-                local group, costForDisplay, hasCost = classify(v.Name)
-                local tag = (group==0) and "[P] " or (group==1) and "[A] " or (group==3) and "[NC] " or ""
-                table.insert(lines, tag..v.Name.." x"..n.." (cost:"..(hasCost and tostring(costForDisplay) or "n/a")..")")
-                if group == 1 then animCount = animCount + 1 end
-                if id then
-                    table.insert(cands, { name=v.Name, id=id, quantity=n, group=group, cost=costForDisplay, hasCost=hasCost })
-                end
-            elseif q and q:IsA("TextLabel") then
-                table.insert(lines, v.Name.." "..(q.Text ~= "" and q.Text or "?"))
+
+    -- Lecture type-agnostique de la quantité
+    local function readQuantity(v)
+        local q = v:FindFirstChild("Quantity")   -- enfant DIRECT uniquement
+        if not q then return nil end
+        if q:IsA("TextLabel") or q:IsA("TextButton") or q:IsA("TextBox") then
+            return parseQty(q.Text)
+        elseif q:IsA("NumberValue") or q:IsA("IntValue") then
+            return tonumber(q.Value)
+        elseif q:IsA("StringValue") then
+            return parseQty(q.Value)
+        end
+        return nil
+    end
+
+    -- Traitement d'un bouton
+    local function processButton(v)
+        if not (v:IsA("TextButton") or v:IsA("ImageButton")) then return end
+        local n = readQuantity(v)
+        local id = findId(v.Name)
+        if n and n >= 1 then
+            local group, costForDisplay, hasCost = classify(v.Name)
+            local tag = (group==0) and "[P] " or (group==1) and "[A] " or (group==3) and "[NC] " or ""
+            table.insert(lines, tag..v.Name.." x"..n.." (cost:"..(hasCost and tostring(costForDisplay) or "n/a")..")")
+            if group == 1 then animCount = animCount + 1 end
+            if id then
+                table.insert(cands, { name=v.Name, id=id, quantity=n, group=group, cost=costForDisplay, hasCost=hasCost })
+            else
+                table.insert(lines, "  [!] "..v.Name.." - ID introuvable")
+            end
+        else
+            -- Log si un bouton a pas de quantité lisible
+            local q = v:FindFirstChild("Quantity")
+            if q then
+                table.insert(lines, "[?] "..v.Name.." qty="..q.ClassName)
             end
         end
     end
+
+    -- Parcours récursif de List (gère les dossiers/frames intermédiaires)
+    local function walk(node)
+        for _, child in ipairs(node:GetChildren()) do
+            if child:IsA("TextButton") or child:IsA("ImageButton") then
+                processButton(child)
+            elseif child:IsA("Folder") or child:IsA("Frame") or child:IsA("ScrollingFrame") then
+                walk(child)
+            end
+        end
+    end
+
+    walk(List)
 
     table.sort(cands, function(a, b)
         if a.group ~= b.group then return a.group < b.group end
@@ -1283,4 +1319,4 @@ task.spawn(function()
     end
 end)
 
-print("[FORD HUB] Script chargé — Webhook + Notifs cachées + vente 2.5s")
+print("[FORD HUB] Script chargé — Quantity enfant direct + vente 2.5s")
