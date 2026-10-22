@@ -11,7 +11,7 @@ local PRESENCE_MAX_FAIL = 5
 
 local priceMarket           = 1000
 local DELAY                 = 2.5
-local MAX_STACK             = 100
+local MAX_STACK             = nil
 local PRICE_THRESHOLD       = 2000
 local DEFAULT_NO_COST_PRICE = 1000
 local LISTING_TYPE          = 2
